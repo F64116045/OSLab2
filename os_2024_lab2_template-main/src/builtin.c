@@ -59,7 +59,6 @@ int cd(char **args)
         fprintf(stderr, "cd: expected argument to \"cd\"\n");
         return 1;
     } else {
-        // 使用 chdir 切換目錄
         if (chdir(args[1]) != 0) {
             perror("cd");
         }

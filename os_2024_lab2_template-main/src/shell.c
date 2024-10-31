@@ -20,29 +20,41 @@
  * 
  */
 void redirection(struct cmd_node *p) {
-    // 處理輸入重定向 (<)
+    int in_fd = -1;
+    int out_fd = -1;
+    
     if (p->in_file != NULL) {
-        int in_fd = open(p->in_file, O_RDONLY);
+        in_fd = open(p->in_file, O_RDONLY);
         if (in_fd < 0) {
             perror("open input file");
-            exit(EXIT_FAILURE);  // 無法打開文件時，退出程序
+            exit(EXIT_FAILURE);  
         }
-        dup2(in_fd, STDIN_FILENO);  // 將標準輸入重定向到 in_file
-        close(in_fd);               // 關閉文件描述符
     }
 
-    // 處理輸出重定向 (>)
     if (p->out_file != NULL) {
-        int out_fd = open(p->out_file, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        out_fd = open(p->out_file, O_WRONLY | O_CREAT | O_TRUNC, 0644);
         if (out_fd < 0) {
+            if (in_fd != -1) close(in_fd);
             perror("open output file");
-            exit(EXIT_FAILURE);  // 無法打開文件時，退出程序
+            exit(EXIT_FAILURE);  
         }
-        dup2(out_fd, STDOUT_FILENO); // 將標準輸出重定向到 out_file
-        close(out_fd);               // 關閉文件描述符
     }
 
-    // 當前不處理管道重定向 (in, out)
+    if (in_fd != -1) {
+        if (dup2(in_fd, STDIN_FILENO) == -1) {
+            perror("dup2 input");
+            exit(EXIT_FAILURE);
+        }
+        close(in_fd);
+    }
+
+    if (out_fd != -1) {
+        if (dup2(out_fd, STDOUT_FILENO) == -1) {
+            perror("dup2 output");
+            exit(EXIT_FAILURE);
+        }
+        close(out_fd);
+    }
 }
 // ===============================================================
 
@@ -61,30 +73,43 @@ int spawn_proc(struct cmd_node *p) {
     pid_t pid;
     int status;
 
-    // 使用 fork 創建子進程
     pid = fork();
-    if (pid == 0) { // 子進程部分
-        // 使用 execvp 執行外部命令
-		redirection(p);
-        if (execvp(p->args[0], p->args) == -1) {
-            // 如果 execvp 失敗，輸出錯誤訊息
-            perror("exec");
-            exit(EXIT_FAILURE); // 子進程退出，表示失敗
+    if (pid == 0) { 
+        
+        redirection(p);
+        if (p->in != STDIN_FILENO) {
+            if (dup2(p->in, STDIN_FILENO) == -1) {
+                perror("dup2 input");
+                exit(EXIT_FAILURE);
+            }
+            close(p->in);
         }
-    } else if (pid < 0) {
-        // 如果 fork 失敗，輸出錯誤訊息
+        
+        if (p->out != STDOUT_FILENO) {
+            if (dup2(p->out, STDOUT_FILENO) == -1) {
+                perror("dup2 output");
+                exit(EXIT_FAILURE);
+            }
+            close(p->out);
+        }
+        
+        execvp(p->args[0], p->args);
+        perror("execvp");
+        exit(EXIT_FAILURE);
+    } 
+    else if (pid < 0) {
         perror("fork");
-        return -1; // fork 失敗，返回錯誤
-    } else {
-        // 父進程等待子進程結束
-        do {
-            waitpid(pid, &status, WUNTRACED);
-        } while (!WIFEXITED(status) && !WIFSIGNALED(status));
+        return -1;
+    }
+    
+    if (waitpid(pid, &status, 0) == -1) {
+        perror("waitpid");
+        return -1;
     }
 
-   
     return 1;
 }
+
 // ===============================================================
 
 
@@ -97,20 +122,62 @@ int spawn_proc(struct cmd_node *p) {
  * @return int
  * Return execution status 
  */
-int fork_cmd_node(struct cmd *cmd)
-{
-	int pipefd[2];
-	pipe(pipefd);
-	while(cmd->head->next != NULL){
-		cmd->head->in = pipefd[0];
-		cmd->head->out = pipefd[1];
-		spawn_proc(cmd->head);
+int fork_cmd_node(struct cmd *cmd) {
+    struct cmd_node *current = cmd->head;
+    int num_pipes = cmd->pipe_num;
+    int pipes[2 * num_pipes];
+    int status = 0;
 
-		cmd->head = cmd->head->next;
-	}
+    for (int i = 0; i < num_pipes; i++) {
+        if (pipe(pipes + i * 2) == -1) {
+            perror("pipe");
+            return -1;
+        }
+    }
 
-	return 1;
+    int i = 0;
+    while (current != NULL) {
+        if (i > 0) {
+            current->in = pipes[(i - 1) * 2];    // 讀取端
+        } else {
+            current->in = STDIN_FILENO;
+        }
+
+        if (current->next != NULL) {
+            current->out = pipes[i * 2 + 1];     // 寫入端
+        } else {
+            current->out = STDOUT_FILENO;
+        }
+
+        status = spawn_proc(current);
+        if (status == -1) {
+            perror("spawn_proc failed");
+            break;
+        }
+
+        if (i > 0) {
+            close(pipes[(i - 1) * 2]);
+        }
+        if (current->next != NULL) {
+            close(pipes[i * 2 + 1]);
+        }
+
+        current = current->next;
+        i++;
+    }
+
+    for (int j = 0; j < 2 * num_pipes; j++) {
+        if (fcntl(pipes[j], F_GETFD) != -1) {  
+            close(pipes[j]);
+        }
+    }
+
+
+    while (wait(&status) > 0);
+
+    return status;
 }
+
 // ===============================================================
 
 
