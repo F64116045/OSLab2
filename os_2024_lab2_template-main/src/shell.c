@@ -19,8 +19,30 @@
  * @param p cmd_node structure
  * 
  */
-void redirection(struct cmd_node *p){
-	
+void redirection(struct cmd_node *p) {
+    // 處理輸入重定向 (<)
+    if (p->in_file != NULL) {
+        int in_fd = open(p->in_file, O_RDONLY);
+        if (in_fd < 0) {
+            perror("open input file");
+            exit(EXIT_FAILURE);  // 無法打開文件時，退出程序
+        }
+        dup2(in_fd, STDIN_FILENO);  // 將標準輸入重定向到 in_file
+        close(in_fd);               // 關閉文件描述符
+    }
+
+    // 處理輸出重定向 (>)
+    if (p->out_file != NULL) {
+        int out_fd = open(p->out_file, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (out_fd < 0) {
+            perror("open output file");
+            exit(EXIT_FAILURE);  // 無法打開文件時，退出程序
+        }
+        dup2(out_fd, STDOUT_FILENO); // 將標準輸出重定向到 out_file
+        close(out_fd);               // 關閉文件描述符
+    }
+
+    // 當前不處理管道重定向 (in, out)
 }
 // ===============================================================
 
@@ -43,6 +65,7 @@ int spawn_proc(struct cmd_node *p) {
     pid = fork();
     if (pid == 0) { // 子進程部分
         // 使用 execvp 執行外部命令
+		redirection(p);
         if (execvp(p->args[0], p->args) == -1) {
             // 如果 execvp 失敗，輸出錯誤訊息
             perror("exec");
@@ -59,7 +82,7 @@ int spawn_proc(struct cmd_node *p) {
         } while (!WIFEXITED(status) && !WIFSIGNALED(status));
     }
 
-    // 成功執行後，返回 1 以保持 shell 的正常運行
+   
     return 1;
 }
 // ===============================================================
@@ -76,6 +99,16 @@ int spawn_proc(struct cmd_node *p) {
  */
 int fork_cmd_node(struct cmd *cmd)
 {
+	int pipefd[2];
+	pipe(pipefd);
+	while(cmd->head->next != NULL){
+		cmd->head->in = pipefd[0];
+		cmd->head->out = pipefd[1];
+		spawn_proc(cmd->head);
+
+		cmd->head = cmd->head->next;
+	}
+
 	return 1;
 }
 // ===============================================================
